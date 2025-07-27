@@ -82,6 +82,18 @@ class History:
             if curr_event["role"] == "user":
                 similarity = self._cosine_sim_gem(self.history[i]["data"]["message"], event["message"])
 
+# Data Structure: kd Treee or just hashmap
+
+# we have a new event
+# we check our database for similar context with slight differences
+# we get the first 5 results
+# we loop through the tree and when we get that result, we append the new result to it and add a timestamp
+# if no results, we can make a new node with no children
+
+# we have a new event
+# we go through our history
+# check for the events that hits a conditions for enough similarity, so we then extend out
+# another condition for no connection then add a new node in the tree
 
 manager = ConnectionManager()
 
