@@ -1,17 +1,16 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Union
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import os
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types, errors
 import numpy as np
-from sentence_transformers import SentenceTransformer
+import pytz
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.feature_extraction.text import TfidfVectorizer
 from datetime import datetime
-import heapq
+from _types import EventData, ListHistory, TimedConfigType
 from vectorDB import ChromaClient
 
 load_dotenv()
@@ -20,7 +19,7 @@ app = FastAPI()
 model = genai.Client(api_key=key)
 
 class HistoryNode:
-    def __init__(self, event_id, event_data):
+    def __init__(self, event_id, event_data: EventData):
         self.id = event_id
         self.data = event_data
         self.children = []
@@ -28,26 +27,30 @@ class HistoryNode:
 
 class History:
     def __init__(self):
-        self.history = []
-        self.context_nodes = {}
+        self.history: ListHistory = []
+        self.context_nodes: Dict[int, Union[HistoryNode, ListHistory]] = {}
         self.vectorDB = ChromaClient()
+        self.timebased_memory = TimeBased()
+        self.dynamic_memory = DynamicSimilarity()
+    
+    async def initialize(self):
+        await self.vectorDB.initialize()
 
-
-    def add_to_history(self, event: dict):
+    async def add_to_history(self, event: dict):
         
         self.history.append(event)
         node_id = len(self.history) - 1
         new_node = HistoryNode(node_id, event)
         self.context_nodes[node_id] = new_node
-        self.vectorDB.add_event(new_node)
+        await self.vectorDB.add_event(new_node)
         self._update_context(new_node)
 
-    def _update_context(self, event: HistoryNode):
+    async def _update_context(self, event: HistoryNode):
 
-        if event.data.get("role") != "user":
+        if event.data.role != "user":
             return
 
-        results = self.vectorDB.query(event.data["message"])
+        results = await self.vectorDB.query(event.data.message)
         best_parent_id = None
         initial_similarity = 0
 
@@ -56,64 +59,93 @@ class History:
                 best_parent_id = int(node_id)
                 initial_similarity = 1 - results['distances'][0][i]
                 break
-        
 
         if best_parent_id is None:
             print("Could not find a suitable parent, creating a new root node")
             return
         
+        best_parent_event = self.context_nodes[best_parent_id]
+        new_similarity = await self.timebased_memory.apply(initial_similarity, 
+                                                           best_parent_event, config={
+                                                                "name": "FIXED",
+                                                                "event": best_parent_event
+                                                            })
+    
+    async def _quick_update_context(self, config: TimedConfigType):
+        last: HistoryNode = self.history[-1]
+        if last.data.role == "AI":
+            last = self.history[-2]
+    
+            
+        eastern = pytz.timezone('US/Eastern')
+        now_time = datetime.now(eastern)
+        if isinstance(config.type, list):
+            results = await self.vectorDB.query_by_time(last.data.message, 
+                                            duration=config.type, 
+                                            now_time=now_time,
+                                            explicit=True)
+        else:
+            results = await self.vectorDB.query_by_time(last.data.message,
+                                                        duration=config.type,
+                                                        now_time=now_time,
+                                                        explicit=False) 
+        
+        return results
         
     
 
 class LinkingStrategy(ABC):
     @abstractmethod
-    def apply(self, **kwargs):
+    async def apply(self, **kwargs):
         raise NotImplementedError
 
 
 class TimeBased(LinkingStrategy):
 
-    def __init__(self, tune = 0.0005):
+    def __init__(self, tune = 0.0005, client: ChromaClient = None):
+        self.client = client
         self.tune = tune
-    
-    def apply(self, *, initial_similarity: float, event: HistoryNode, parent_event: HistoryNode) -> float:
-        time_difference = (event.data["timestamp"] - parent_event.data["timestamp"]).total_seconds()
+        self.dynamictime = []
 
+    async def apply(self, *, initial_similarity: float, event: HistoryNode, parent_event: HistoryNode) -> float:
+        time_difference = (event.data["timestamp"] - parent_event.data["timestamp"]).total_seconds()
 
         decay_factor = 1 / (1 + self.tune * time_difference)
 
         final_score = initial_similarity * decay_factor
 
         return final_score
-    
-
+            
+            
+            
 class DynamicSimilarity(LinkingStrategy):
     def __init__(self, base_threshold=0.7, window_size=5, tune = 0.01):
         self.tune = tune
         self.base_threshold = base_threshold
         self.window_size = window_size
-        self.vectorizer = TfidfVectorizer()
 
-    def apply(self, *, history: list) -> float:
+    async def apply(self, *, history: list, vector_db: ChromaClient) -> float:
         if len(history) < self.window_size:
             return self.base_threshold
 
-        # Get the text from the last few user messages
-        recent_messages = [
-            event["message"] for event in history[-self.window_size:] if event.get("role") == "user"
+       
+        recent_messages_ids = [
+             str(event["id"]) for event in history[-self.window_size:] if event.data.role == "user"
         ]
 
-        if len(recent_messages) < 2:
+        if not embeddings or len(embeddings) < 2:
             return self.base_threshold
-
-        tfidf_matrix = self.vectorizer.fit_transform(recent_messages)
-        similarity_matrix = cosine_similarity(tfidf_matrix)
         
-        avg_similarity = np.mean(similarity_matrix[np.triu_indices(len(similarity_matrix), k=1)])
+        embeddings = await vector_db.get_event(ids=recent_messages_ids)
+
+        similarity_matrix = cosine_similarity(embeddings)
+        
+        iu = np.triu_indices(len(similarity_matrix), k=1)
+        avg_similarity = np.mean(similarity_matrix[iu])
 
         adjusted_threshold = self.base_threshold - (avg_similarity * self.tune)
         
-        return max(adjusted_threshold, 0.6)
+        return np.clip(adjusted_threshold, 0.65, 0.85)
 
         
 class ConnectionManager:
@@ -127,7 +159,8 @@ class ConnectionManager:
 
     async def send_personal_message(self, message: str, websocket: WebSocket): 
         await websocket.send_text(message)
-        now_time = datetime.now()
+        eastern = pytz.timezone('US/Eastern')
+        now_time = datetime.now(eastern)
         role = "user" if message.startswith("user:") else "AI"
         event = {"role": role, "timestamp": now_time, "message": message}
         self.history.add_to_history(event)            
