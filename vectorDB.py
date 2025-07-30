@@ -1,11 +1,9 @@
 from uuid import UUID, uuid4
 import chromadb
 import os
-import logging
 from chromadb.utils import embedding_functions
-from chromadb.api.client import AsyncClient
 from typing import Any, List, Union
-from update_mem import HistoryNode
+from _types import HistoryNode
 from datetime import datetime, timedelta
 
 class ChromaClient:

@@ -1,17 +1,26 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Union
-
+from typing import Dict, List, Optional, Union
 from update_mem import HistoryNode
+
 
 @dataclass
 class EventData:
     role: str
     message: str
+    timestamp: datetime
 
 @dataclass
-class ListHistory:
-    histories: List[HistoryNode]
+class HistoryNode:
+    id: int
+    data: EventData
+    children: List[HistoryNode] = field(default_factory=list)
+    sparent: Optional[HistoryNode] = None
+
+
+@dataclass
+class ContextGraph:
+    context_graph: Dict[int, HistoryNode]
 
 @dataclass
 class TimedConfigType:

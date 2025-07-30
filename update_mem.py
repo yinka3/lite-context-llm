@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Union
+from functools import lru_cache
+import heapq
+from typing import Any, Dict, List, Set, Union
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import os
 from dotenv import load_dotenv
@@ -10,35 +12,42 @@ import pytz
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from datetime import datetime
-from _types import EventData, ListHistory, TimedConfigType
+from _types import ContextGraph, EventData, HistoryNode, TimedConfigType
 from vectorDB import ChromaClient
+import spacy
+
 
 load_dotenv()
 key = os.environ.get("SECRET_KEY")
 app = FastAPI()
 model = genai.Client(api_key=key)
+mspacy_medium = spacy.load('en_core_web_md')
+mspacy_large = spacy.load('en_core_web_lg')
 
-class HistoryNode:
-    def __init__(self, event_id, event_data: EventData):
-        self.id = event_id
-        self.data = event_data
-        self.children = []
-        self.parent = None
 
 class History:
     def __init__(self):
-        self.history: ListHistory = []
-        self.context_nodes: Dict[int, Union[HistoryNode, ListHistory]] = {}
+        self.history: List[HistoryNode] = []
+        self.context_nodes: ContextGraph = ContextGraph(context_graph={})
+        self._user_event_cnt = 0
+        self.top_events: List[HistoryNode] = []
         self.vectorDB = ChromaClient()
         self.timebased_memory = TimeBased()
         self.dynamic_memory = DynamicSimilarity()
     
     async def initialize(self):
         await self.vectorDB.initialize()
+    
+    def get_last_event(self):
+        if len(self.history) <= 0:
+            return None
+        return self.history[-1]
 
-    async def add_to_history(self, event: dict):
+    async def add_to_history(self, event: EventData):
         
         self.history.append(event)
+        if event.role.lower() == "user":
+            self._user_event_cnt += 1
         node_id = len(self.history) - 1
         new_node = HistoryNode(node_id, event)
         self.context_nodes[node_id] = new_node
@@ -65,13 +74,10 @@ class History:
             return
         
         best_parent_event = self.context_nodes[best_parent_id]
-        new_similarity = await self.timebased_memory.apply(initial_similarity, 
-                                                           best_parent_event, config={
-                                                                "name": "FIXED",
-                                                                "event": best_parent_event
-                                                            })
-    
-    async def _quick_update_context(self, config: TimedConfigType):
+        new_similarity = await self.timebased_memory.apply(initial_similarity, event, best_parent_event)
+        
+
+    async def _quick_check_context(self, config: TimedConfigType):
         last: HistoryNode = self.history[-1]
         if last.data.role == "AI":
             last = self.history[-2]
@@ -91,8 +97,65 @@ class History:
                                                         explicit=False) 
         
         return results
+
+
+    def dfs_search(self, start_node: HistoryNode):
+
+        visited = set()
+
+        def dfs(current_node_id: int):
+            visited.add(current_node_id)
+            current_node = self.context_nodes.context_graph.get(current_node_id)
+            if not current_node:
+                return
+            
+            for child_node in current_node.children:
+                if child_node.id not in visited:
+                    dfs(child_node.id)
+
+        dfs(start_node.id)
+        return len(visited) - 1
+
+    def find_candidates(self) -> Set[HistoryNode]:
+
+        candidates: Set[HistoryNode] = set()
         
+        for node in self.context_nodes.context_graph.values():
+            if node.sparent is None:
+                candidates.add(node)
+                
+        return candidates
     
+    async def update_core_memory(self):
+
+        if self._user_event_cnt == 0:
+            return
+        
+        candidates = list(self.find_candidates())
+        scores = []
+        heapq.heapify(scores)
+        for node in candidates:
+            weight = self.dfs_search(node)
+            raw_heaviness = (weight / self._user_event_cnt)
+            eastern = pytz.timezone('US/Eastern')
+            now_time = datetime.now(eastern)
+            days = (now_time - node.data.timestamp).total_seconds() / (24 * 3600)
+            age_factor = np.log(days + 1)
+            heaviness_score = raw_heaviness * age_factor
+
+            if len(scores) < 50:
+                heapq.heappush(scores, (heaviness_score, node.id))
+            else:
+                heapq.heappushpop(scores, (heaviness_score, node.id))
+        
+        self.top_events = [node_id for _, node_id in scores]
+
+
+    async def _quick_update_context(self, config: TimedConfigType):
+
+        results = await self._quick_check_context(config=config)
+        last_event = self.get_last_event()
+
 
 class LinkingStrategy(ABC):
     @abstractmethod
@@ -162,8 +225,9 @@ class ConnectionManager:
         eastern = pytz.timezone('US/Eastern')
         now_time = datetime.now(eastern)
         role = "user" if message.startswith("user:") else "AI"
-        event = {"role": role, "timestamp": now_time, "message": message}
-        self.history.add_to_history(event)            
+        event_obj = EventData(role=role, timestamp=now_time, message=message)
+
+        self.history.add_to_history(event_obj)            
         
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
