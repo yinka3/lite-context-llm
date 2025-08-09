@@ -71,7 +71,7 @@ class ChromaClient:
             self.memory_manager.update_count(added=1)
 
             if await self.memory_manager.should_cleanup():
-                pass
+                await self._perform_cleanup()
 
             return True
         except Exception as e:
@@ -83,8 +83,9 @@ class ChromaClient:
             raise TypeError("client not initialized.")
         
         try:
-            query_embedding = self.embed_func_query([query])
-            return self.collection.query(query_texts=[query], query_embeddings=query_embedding, n_results=n_results, include=["metadatas", "documents", "distances"])
+
+            return self.collection.query(query_texts=[query],
+                                         n_results=n_results, include=["metadatas", "documents", "distances"])
         except Exception as e:
             logging.error(f"Query failed for '{query}': {e}")
             return None
@@ -93,27 +94,26 @@ class ChromaClient:
     async def query_by_time(self, 
                             query: str, 
                             duration: Union[list, int], 
-                            now_time: datetime, 
+                            now_time: datetime,
                             explicit: bool = False, n_results: int = 10):
         if self.collection is None:
             raise TypeError("client not initialized.")
 
         
         try:
-            query_embedding = self.embed_func_query([query])
             if explicit and isinstance(duration, list):
                     time_delta = timedelta(
                         days=duration[0]*365 + duration[1]*30 + duration[2],
                         hours=duration[3] if len(duration) > 3 else 0
                     )
             else:
-                time_delta = timedelta(days=int(duration))
+                time_delta = timedelta(days=float(duration))
+
             
             start_time = now_time - time_delta
 
             return self.collection.query(
                     query_texts=[query],
-                    query_embeddings=query_embedding,
                     n_results=n_results,
                     where={
                         "$and": [
@@ -128,6 +128,26 @@ class ChromaClient:
             logging.error(f"Time-based query failed: {e}")
             return {}
     
+    async def query_by_date(self, query: str, target_date: datetime, window: int = 0.5, n_results: int = 10):
+        if self.collection is None:
+            raise TypeError("client not initialized.")
+        
+        try:
+            start = target_date - timedelta(days=float(window))
+            end = target_date + timedelta(days=float(window))
+            return self.collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                where={"$and": [
+                            {"int_time": {"$gte": int(start.timestamp())}},
+                            {"int_time": {"$lte": int(end.timestamp())}}
+                        ]},
+                include=["metadatas", "documents", "distances"]
+            )
+        except Exception as e:
+            logging.error(f"Time-based query failed: {e}")
+            return {}
+    
     async def _perform_cleanup(self):
         try:
             being_removed = await self.memory_manager.get_cleanup_candidates(self.collection)
@@ -138,6 +158,8 @@ class ChromaClient:
                 logging.info(f"Cleaned up {len(being_removed)} old messages")
         except Exception as e:
             logging.error(f"Cleanup failed: {e}")
+
+
 class MemoryManager:
 
     def __init__(self, max_messages: int = 50000, cleanup_batch: int = 1000):

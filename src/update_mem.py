@@ -1,21 +1,22 @@
-import heapq
 from typing import Dict, List, Optional, Set
 import os
-
+import spacy
 import numpy as np
 import pytz
+import pickle
 import numpy as np
 from datetime import datetime
 from _types import ContextGraph, EventData, HistoryNode, TimedConfigType
 from strategy import DynamicSimilarity, TimeBased
 from vectorDB import ChromaClient
-import spacy
+from storage import Storage
 
+# want to use spacy models for topic generation to group
 try:
     mspacy_medium = spacy.load('en_core_web_md')
-    mspacy_large = spacy.load('en_core_web_lg')
 except Exception as e:
     print(f"Spacy model not load")
+    mspacy_medium = None
 
 
 class History:
@@ -30,20 +31,27 @@ class History:
         self.vectorDB = ChromaClient()
         self.timebased_memory = TimeBased()
         self.dynamic_memory = DynamicSimilarity()
-    
+        self.storage = Storage(self)
+
+        self.storage._load_from_disk()
+
     async def initialize(self):
         await self.vectorDB.initialize()
     
-    async def add_to_history(self, event: EventData, context_graph: Optional[ContextGraph]):
+    async def add_to_history(self, event: EventData, context_graph: Optional[ContextGraph] = None):
         
         try:
             if event.role.lower() == "user":
                 self._user_event_cnt += 1
-            node_id = len(self.history) - 1
+            node_id = len(self.history)
             new_node = HistoryNode(node_id, event)
             self.context_nodes.context_graph[node_id] = new_node
             await self.vectorDB.add_event(new_node)
             self.history.append(new_node)
+
+            if len(self.history) % 20 == 0:
+                self.storage._save_to_disk()
+                
             if context_graph is None:
                 await self._update_context(new_node)
         except Exception as e:
@@ -63,7 +71,7 @@ class History:
                 return
             
             best_parent_id = None
-            initial_similarity = 0
+            best_score = 0
             
             for i, node_id in enumerate(results['ids'][0]):
                 candidate_id = int(node_id)
@@ -76,44 +84,47 @@ class History:
                     
                 if self._would_create_cycle(event, candidate_id):
                     continue
-                
-                best_parent_id = candidate_id
+
+                candidate_node = self.context_nodes.context_graph[node_id]
                 initial_similarity = 1 - results['distances'][0][i]
-                break
+                
+
+                time_score = await self.timebased_memory.apply(
+                    initial_similarity=initial_similarity,
+                    event=event,
+                    parent_event=candidate_node
+                )
+                
+                if time_score > best_score:
+                    best_score = time_score
+                    best_parent_id = candidate_id
             
             if best_parent_id is None:
                 print(f"No suitable parent found for event {event.id}, creating root node")
-                self._make_root_node(event)
+                event.sparent = None
                 return
             
+            
+            dynamic_threshold = None
             try:
-                best_parent_event = self.context_nodes.context_graph[best_parent_id]
-                final_score = await self.timebased_memory.apply(
-                    initial_similarity=initial_similarity,
-                    event=event,
-                    parent_event=best_parent_event
-                )
-                
                 dynamic_threshold = await self.dynamic_memory.apply(
                     history=self.history,
                     vector_db=self.vectorDB
                 )
-                
-            except Exception as e:
-                print(f"Error calculating similarity scores: {e}")
-                final_score = initial_similarity
+            except:
                 dynamic_threshold = 0.75
             
-            if final_score >= dynamic_threshold:
+            if best_score >= dynamic_threshold:
+                best_parent_event = self.context_nodes.context_graph[best_parent_id]
                 event.sparent = best_parent_event
                 best_parent_event.children.append(event)
             else:
-                print(f"Similarity {final_score:.3f} below threshold {dynamic_threshold:.3f}, making root node")
+                print(f"Similarity {best_score:.3f} below threshold {dynamic_threshold:.3f}, making root node")
                 event.sparent = None
                 
         except Exception as e:
             print(f"Critical error in context building for event {event.id}: {e}")
-            self.root_nodes.add(event.id)
+            self.root_nodes.add(event)
 
 
     def _would_create_cycle(self, new_child: HistoryNode, potential_parent_id: int) -> bool:

@@ -1,0 +1,67 @@
+from pathlib import Path
+import pickle
+import json
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from update_mem import History
+
+
+class Storage:
+
+    def __init__(self, history: History, persistence_dir: str = "./memory_storage"):
+        self.history = history
+        self.persistence_dir = Path(persistence_dir)
+        self.persistence_dir.mkdir(exist_ok=True)
+    
+    def _save_to_disk(self):
+        """Persist memory to disk for recovery"""
+        try:
+            # Save history
+            with open(self.persistence_dir / "history.pkl", "wb") as f:
+                pickle.dump(self.history, f)
+            
+            # Save context graph
+            with open(self.persistence_dir / "context_graph.pkl", "wb") as f:
+                pickle.dump(self.history.context_nodes, f)
+            
+            # Save metadata
+            metadata = {
+                "user_event_cnt": self.history._user_event_cnt,
+                "root_nodes": list(self.history.root_nodes),
+                "last_save": datetime.now().isoformat()
+            }
+            with open(self.persistence_dir / "metadata.json", "w") as f:
+                json.dump(metadata, f)
+                
+        except Exception as e:
+            print(f"Failed to save memory to disk: {e}")
+    
+    def _load_from_disk(self):
+        """Load persisted memory from disk"""
+        try:
+            # Load history
+            history_path = self.persistence_dir / "history.pkl"
+            if history_path.exists():
+                with open(history_path, "rb") as f:
+                    self.history = pickle.load(f)
+            
+            # Load context graph
+            graph_path = self.persistence_dir / "context_graph.pkl"
+            if graph_path.exists():
+                with open(graph_path, "rb") as f:
+                    self.history.context_nodes = pickle.load(f)
+            
+            # Load metadata
+            metadata_path = self.persistence_dir / "metadata.json"
+            if metadata_path.exists():
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+                    self.history._user_event_cnt = metadata.get("user_event_cnt", 0)
+                    self.history.root_nodes = set(metadata.get("root_nodes", []))
+                    
+            print(f"Loaded {len(self.history)} messages from disk")
+            
+        except Exception as e:
+            print(f"Failed to load memory from disk: {e}")
