@@ -2,10 +2,7 @@ from pathlib import Path
 import pickle
 import json
 from datetime import datetime
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from update_mem import History
+from update_mem import History
 
 
 class Storage:

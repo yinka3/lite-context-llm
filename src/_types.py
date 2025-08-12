@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Union
-from update_mem import HistoryNode
+
 
 
 @dataclass
@@ -14,8 +14,8 @@ class EventData:
 class HistoryNode:
     id: int
     data: EventData
-    children: List[HistoryNode] = field(default_factory=list)
-    sparent: Optional[HistoryNode] = None
+    children: List['HistoryNode'] = field(default_factory=list)
+    sparent: Optional['HistoryNode'] = None
 
 
 @dataclass

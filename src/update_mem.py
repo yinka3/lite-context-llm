@@ -1,9 +1,7 @@
 from typing import Dict, List, Optional, Set
 import os
-import spacy
 import numpy as np
 import pytz
-import pickle
 import numpy as np
 from datetime import datetime
 from _types import ContextGraph, EventData, HistoryNode, TimedConfigType
@@ -12,11 +10,12 @@ from vectorDB import ChromaClient
 from storage import Storage
 
 # want to use spacy models for topic generation to group
-try:
-    mspacy_medium = spacy.load('en_core_web_md')
-except Exception as e:
-    print(f"Spacy model not load")
-    mspacy_medium = None
+# try:
+#     import spacy
+#     mspacy_medium = spacy.load('en_core_web_md')
+# except Exception as e:
+#     print(f"Spacy model not load")
+#     mspacy_medium = None
 
 
 class History:
@@ -85,7 +84,7 @@ class History:
                 if self._would_create_cycle(event, candidate_id):
                     continue
 
-                candidate_node = self.context_nodes.context_graph[node_id]
+                candidate_node = self.context_nodes.context_graph[candidate_id]
                 initial_similarity = 1 - results['distances'][0][i]
                 
 
@@ -126,7 +125,49 @@ class History:
             print(f"Critical error in context building for event {event.id}: {e}")
             self.root_nodes.add(event)
 
-
+    async def get_relevant_context(self, query: str, max_results: int = 5) -> List[Dict]:
+        """Get relevant historical context for a query"""
+        try:
+            results = await self.vectorDB.query(query, n_results=max_results)
+            
+            if not results or not results.get('ids') or not results['ids'][0]:
+                return []
+            
+            relevant_contexts = []
+            
+            for i, node_id in enumerate(results['ids'][0]):
+                node_id = int(node_id)
+                
+                if node_id not in self.context_nodes.context_graph:
+                    continue
+                
+                node = self.context_nodes.context_graph[node_id]
+                
+                conversation_thread = self.get_conversation_story(node_id)
+                
+                context = {
+                    'matched_message': node.data.message,
+                    'role': node.data.role,
+                    'timestamp': node.data.timestamp,
+                    'similarity': 1 - results['distances'][0][i],
+                    'conversation_thread': [
+                        {
+                            'role': n.data.role,
+                            'message': n.data.message,
+                            'timestamp': n.data.timestamp.isoformat()
+                        }
+                        for n in conversation_thread[-5:]
+                    ]
+                }
+                relevant_contexts.append(context)
+            
+            relevant_contexts.sort(key=lambda x: x['similarity'], reverse=True)
+            
+            return relevant_contexts
+            
+        except Exception as e:
+            print(f"Error getting relevant context: {e}")
+            return []
     def _would_create_cycle(self, new_child: HistoryNode, potential_parent_id: int) -> bool:
 
         current_id = potential_parent_id
@@ -196,47 +237,6 @@ class History:
                                                         now_time=now_time,
                                                         explicit=False) 
         return results
-    
-
-    # this is an experiment, not sure if this will actually work or how to even use it propery for my intention
-    # async def _ephemeral_context(self, rant_event: EventData):
-    #     forked_graph = copy.deepcopy(self.context_nodes)
-    #     copy_list = copy.deepcopy(self.top_events)
-    #     _id = -1
-    #     new_node = HistoryNode(id=_id, data=rant_event)
-
-    #     best_top_event: List[HistoryNode] = []
-    #     for top_eve in copy_list:
-    #         embeddings = await self.vector_db.get_event(ids=[top_eve.id, rant_event])
-    #         similarity_matrix = cosine_similarity(embeddings)
-    #         if similarity_matrix > 0.7:
-    #             best_top_event.append(top_eve)
-        
-    #     for eve in best_top_event:
-    #         eve.children.append(new_node)
-        
-
-    #     # Do stuff with it
-
-    #     # empty out the epharamel list
-    #     self._ephemeral_history.clear()
-
-    # def dfs_search(self, start_node: HistoryNode):
-
-    #     visited = set()
-
-    #     def dfs(current_node_id: int):
-    #         visited.add(current_node_id)
-    #         current_node = self.context_nodes.context_graph.get(current_node_id)
-    #         if not current_node:
-    #             return
-            
-    #         for child_node in current_node.children:
-    #             if child_node.id not in visited:
-    #                 dfs(child_node.id)
-
-    #     dfs(start_node.id)
-    #     return len(visited) - 1
     
 
         
