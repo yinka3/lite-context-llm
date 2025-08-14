@@ -21,21 +21,18 @@ class ChromaClient:
         api_key=os.environ["SECRET_KEY"], task_type="RETRIEVAL_QUERY")
 
         self.collection = None
-        self.memory_manager = MemoryManager()
 
     
-    async def initialize(self):
+    def initialize(self):
         try:
             self.collection = self.client.get_or_create_collection(name="LLM_Memory", embedding_function=self.embed_func_doc)
 
-            count = self.collection.count()
-            self.memory_manager.message_count = count
-            logging.info(f"Initialized ChromaDB with {count} messages")
+            logging.info(f"Initialized ChromaDB with {self.collection.count} messages")
         except Exception as e:
             logging.error(f"Failed to initialize ChromaDB: {e}")
             return
     
-    async def get_event(self, ids: List[str] | str):
+    def get_event(self, ids: List[str] | str):
 
         if self.collection is None:
             raise TypeError("client not initialized.")
@@ -43,10 +40,10 @@ class ChromaClient:
         if not ids:
             return []
         
-        results = await self.collection.get(ids=ids, include=["documents"])
+        results = self.collection.get(ids=ids, include=["documents"])
         return results.get('documents', [])
     
-    async def add_event(self, event: HistoryNode):
+    def add_event(self, event: HistoryNode):
         if self.collection is None:
             raise TypeError("client not initialized.")
         
@@ -58,24 +55,19 @@ class ChromaClient:
                 "int_time": int(event.data.timestamp.timestamp()),
                 "role": event.data.role,
                 "node_id": event.id
-                # add another metadata called llm_summary, make a small llm model give it a topic phrase
+                
             }
 
             self.collection.add(ids=[str(event.id)], 
                                     metadatas=[metadata], 
                                     documents=[document_text])
 
-            self.memory_manager.update_count(added=1)
-
-            if await self.memory_manager.should_cleanup():
-                await self._perform_cleanup()
-
             return True
         except Exception as e:
             logging.info(f"Count not add {event.id}: {e}")
             return False
         
-    async def query(self, query: str, n_results: int = 10):
+    def query(self, query: str, n_results: int = 10):
         if self.collection is None:
             raise TypeError("client not initialized.")
         
@@ -88,7 +80,7 @@ class ChromaClient:
             return None
         
 
-    async def query_by_time(self, 
+    def query_by_time(self, 
                             query: str, 
                             duration: Union[list, int], 
                             now_time: datetime,
@@ -125,7 +117,7 @@ class ChromaClient:
             logging.error(f"Time-based query failed: {e}")
             return {}
     
-    async def query_by_date(self, query: str, target_date: datetime, window: int = 0.5, n_results: int = 10):
+    def query_by_date(self, query: str, target_date: datetime, window: int = 0.5, n_results: int = 10):
         if self.collection is None:
             raise TypeError("client not initialized.")
         
@@ -145,75 +137,3 @@ class ChromaClient:
             logging.error(f"Time-based query failed: {e}")
             return {}
     
-    async def _perform_cleanup(self):
-        try:
-            being_removed = await self.memory_manager.get_cleanup_candidates(self.collection)
-
-            if being_removed:
-                self.collection.delete(ids=being_removed)
-                self.memory_manager.update_count(removed=len(being_removed))
-                logging.info(f"Cleaned up {len(being_removed)} old messages")
-        except Exception as e:
-            logging.error(f"Cleanup failed: {e}")
-
-
-class MemoryManager:
-
-    def __init__(self, max_messages: int = 50000, cleanup_batch: int = 1000):
-        self.message_count = 0
-        self.max_messages = max_messages
-        self.cleanup_batch = cleanup_batch
-        self.cleanup_threshold = int(max_messages * 0.9)
-    
-
-    async def should_cleanup(self) -> bool:
-        return self.message_count >= self.cleanup_threshold
-    
-    async def get_cleanup_candidates(self, collection) -> List[str]:
-        try:
-            results = collection.get(
-                limit=self.cleanup_batch * 2,
-                include=["metadatas"]
-            )
-            
-            if not results['ids']:
-                return []
-            
-            items = []
-            for i, meta in enumerate(results["metadatas"]):
-                if 'int_time' in meta:
-                    items.append((results['ids'][i], meta['int_time']))
-
-            items.sort(key=lambda x: x[1])
-            
-            return [item[0] for item in items[:self.cleanup_batch]]
-            
-        except Exception as e:
-            logging.error(f"Failed to get cleanup candidates: {e}")
-            return []
-    
-    def update_count(self, added: int = 0, removed: int = 0):
-        self.message_count += added - removed
-        logging.info(f"Message count: {self.message_count}/{self.max_messages} ({self.message_count/self.max_messages*100:.1f}% full)")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-            
-        
-
-

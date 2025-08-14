@@ -2,12 +2,16 @@ from pathlib import Path
 import pickle
 import json
 from datetime import datetime
-from update_mem import History
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from update_mem import History
 
 
 class Storage:
 
-    def __init__(self, history: History, persistence_dir: str = "./memory_storage"):
+    def __init__(self, history: 'History', persistence_dir: str = "./memory_storage"):
         self.history = history
         self.persistence_dir = Path(persistence_dir)
         self.persistence_dir.mkdir(exist_ok=True)
@@ -58,7 +62,7 @@ class Storage:
                     self.history._user_event_cnt = metadata.get("user_event_cnt", 0)
                     self.history.root_nodes = set(metadata.get("root_nodes", []))
                     
-            print(f"Loaded {len(self.history)} messages from disk")
+            print(f"Loaded {len(self.history.history)} messages from disk")
             
         except Exception as e:
             print(f"Failed to load memory from disk: {e}")

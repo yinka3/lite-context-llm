@@ -29,6 +29,7 @@ class ConnectionManager:
         
         self.rant_sessions: List[Dict] = []
         self.cleanup_task: Optional[asyncio.Task] = None
+        self.start_time = datetime.now(pytz.timezone('US/Eastern'))
 
         self.model_name: str = "gemini-2.0-flash-001"
     
@@ -36,17 +37,17 @@ class ConnectionManager:
         await websocket.accept()
         self.active_connection = websocket
         if not hasattr(self.history, 'initialized'):
-            await self.history.initialize()
+            self.history.initialize()
             self.history.initialized = True
     
-    async def add_message_to_history(self, message: str, role: str):
+    def add_message_to_history(self, message: str, role: str):
         """Add message to permanent history"""
         eastern = pytz.timezone('US/Eastern')
         now_time = datetime.now(tz=eastern)
         event_obj = EventData(role=role, timestamp=now_time, message=message)
         
         try:
-            await self.history.add_to_history(event_obj, None)
+            self.history.add_to_history(event_obj)
         except Exception as e:
             print(f"History update failed: {e}")
 
@@ -63,7 +64,7 @@ class ConnectionManager:
         
         return context
     
-    async def start_rant_mode(self):
+    def start_rant_mode(self):
         """Rant mode activated, go crazy"""
 
         self.rant_mode = True
@@ -75,7 +76,7 @@ class ConnectionManager:
         if self.cleanup_task:
             self.cleanup_task.cancel()
         
-    async def end_rant_mode(self):
+    def end_rant_mode(self):
         """Exit rant mode and start cleaning up"""
 
         if not self.rant_mode:
@@ -83,7 +84,7 @@ class ConnectionManager:
         
         self.rant_mode = False
 
-        summary = await self.generate_rant_summary()
+        summary = self.generate_rant_summary()
 
         if summary:
             self.rant_sessions.append(summary)
@@ -94,7 +95,7 @@ class ConnectionManager:
         self.cleanup_task = asyncio.create_task(self.cleanup_rant_data())
 
 
-    async def generate_rant_summary(self):
+    def generate_rant_summary(self):
         """Generate a brief summary of the rant session"""
         if not self.rant_messages:
             return "Brief rant with no significant content"
@@ -127,7 +128,7 @@ class ConnectionManager:
         """Process incoming message based on mode"""
         
         if user_message.lower() == "/rant":
-            await self.start_rant_mode()
+            self.start_rant_mode()
             await websocket.send_json({
                 "type": "system",
                 "message": "Rant mode activated! Feel free to vent. Type /done when finished."
@@ -135,7 +136,7 @@ class ConnectionManager:
             return
         
         elif user_message.lower() == "/done" and self.rant_mode:
-            await self.end_rant_mode()
+            self.end_rant_mode()
             await websocket.send_json({
                 "type": "system", 
                 "message": "Rant mode ended. Returning to normal conversation."
@@ -150,10 +151,24 @@ class ConnectionManager:
     async def process_normal_message(self, user_message: str, websocket: WebSocket):
         """Process message in normal mode using manual history"""
         
-        await self.add_message_to_history(user_message, "user")
-    
+        if len(self.history.history) >= History.MAX_CAPACITY:
+            self.history.storage._save_to_disk()
+            await websocket.send_json({
+                "type": "system",
+                "message": f"Memory capacity reached ({History.MAX_CAPACITY} messages). Please export your history or start a new session.",
+                "action_required": True,
+                "options": ["export_history", "start_new_session"]
+            })
+            return
+        
+        # Now safe to add
+        eastern = pytz.timezone('US/Eastern')
+        now_time = datetime.now(tz=eastern)
+        event_obj = EventData(role="user", timestamp=now_time, message=user_message)
+        self.history.add_to_history(event_obj)
+            
         try:
-            relevant_contexts = await self.history.get_relevant_context(user_message, max_results=5)
+            relevant_contexts = self.history.get_relevant_context(user_message, max_results=5)
             
             conversation_history = []
             
@@ -195,7 +210,7 @@ class ConnectionManager:
         """Process message in rant mode - no permanent storage"""
         
         try:
-            relevant_contexts = await self.history.get_relevant_context(user_message, max_results=5)
+            relevant_contexts = self.history.get_relevant_context(user_message, max_results=5)
             
             rant_conversation = []
             
@@ -271,19 +286,75 @@ class ConnectionManager:
         # Calculate time remaining (5 minutes - elapsed time)
         if self.rant_start_time:
             elapsed = (datetime.now(pytz.timezone('US/Eastern')) - self.rant_start_time).total_seconds()
-            time_remaining = max(0, 300 - elapsed)  # 300 seconds = 5 minutes
+            time_remaining = max(0, 300 - elapsed)
             return {
                 "cleaning": True,
                 "time_remaining": time_remaining,
-                "stage": "waiting"  # could be "waiting" or "deleting"
+                "stage": "waiting"
             }
         
         return {"cleaning": True, "time_remaining": 0}
+    
+    def get_memory_warning_level(self, percentage):
+        if percentage >= 99:
+            return "CRITICAL"
+        elif percentage >= 95:
+            return "HIGH"  
+        elif percentage >= 90:
+            return "MEDIUM"
+        else:
+            return "LOW"
+    
+    def get_memory_stats(self):
+        """Get memory statistics"""
+        current_time = datetime.now(pytz.timezone('US/Eastern'))
+        uptime_seconds = (current_time - self.start_time).total_seconds()
+        
+        # Get connection count from history
+        connection_count = sum(
+            len(node.children) 
+            for node in self.history.context_nodes.context_graph.values() 
+            if node is not None
+        )
+        
+        # Calculate memory usage
+        total_messages = len(self.history.history)
+        max_messages = History.MAX_CAPACITY 
+        percentage = (total_messages / max_messages) * 100
+        limit_level = self.get_memory_warning_level(percentage)
+
+        return {
+            "total_messages": total_messages,
+            "user_messages": self.history._user_event_cnt,
+            "ai_messages": total_messages - self.history._user_event_cnt,
+            "memory_usage": f"{total_messages}/{max_messages}",
+            "memory_percentage": percentage,
+            "limit": limit_level,
+            "root_nodes": len(self.history.root_nodes),
+            "connections": connection_count,
+            "uptime_seconds": uptime_seconds,
+            "uptime_formatted": self._format_uptime(uptime_seconds),
+            "model_name": self.model_name
+        }
+
+    def _format_uptime(self, seconds: float) -> str:
+        """Format uptime in human readable format"""
+        days = int(seconds // 86400)
+        hours = int((seconds % 86400) // 3600)
+        minutes = int((seconds % 3600) // 60)
+        
+        if days > 0:
+            return f"{days}d {hours}h {minutes}m"
+        elif hours > 0:
+            return f"{hours}h {minutes}m"
+        else:
+            return f"{minutes}m"
       
     def disconnect(self):
         self.active_connection = None
         if self.cleanup_task:
             self.cleanup_task.cancel()
+        self.history.storage._save_to_disk()
 
 
 manager = ConnectionManager()
