@@ -104,6 +104,7 @@ class History:
                 best_parent_event = self.context_nodes.context_graph[best_parent_id]
                 event.sparent = best_parent_event
                 best_parent_event.children.append(event)
+                print(f"✓ Connected: Message {event.id} → Message {best_parent_id} (score: {best_score:.3f})")
             else:
                 print(f"Score {best_score:.3f} below threshold {threshold:.3f}, making root node")
                 event.sparent = None
@@ -113,14 +114,19 @@ class History:
             
     
     def get_similarity_threshold(self, message_count: int) -> float:
-        """Progressive threshold: 0.55 to 0.80 as memory fills"""
+        """Progressive threshold: 0.51 to 0.80 as memory fills"""
         fullness = message_count / self.MAX_CAPACITY
-        return 0.55 + (0.25 * fullness)
+        return 0.51 + (0.25 * fullness)
 
     def apply_time_decay(self, similarity: float, current_time: datetime, candidate_time: datetime) -> float:
-        """Linear decay: lose 10% per day, minimum 30%"""
-        days_ago = (current_time - candidate_time).total_seconds() / 86400
-        time_multiplier = max(0.3, 1 - (days_ago * 0.1))
+        """Linear decay with grace period for recent messages"""
+        hours_ago = (current_time - candidate_time).total_seconds() / 3600
+        
+        if hours_ago < 2:
+            return similarity
+        
+        days_ago = hours_ago / 24
+        time_multiplier = max(0.4, 1 - (days_ago * 0.05))
         return similarity * time_multiplier
 
     def get_relevant_context(self, query: str, max_results: int = 5) -> List[Dict]:

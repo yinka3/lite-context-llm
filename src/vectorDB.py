@@ -12,7 +12,11 @@ class ChromaClient:
 
     def __init__(self, db_id: UUID = uuid4()):
         self.db_id = db_id
-        self.client = chromadb.PersistentClient()
+        self.client = chromadb.PersistentClient(
+            settings=chromadb.config.Settings(
+                anonymized_telemetry=False
+            )
+        )
 
         self.embed_func_doc = embedding_functions.GoogleGenerativeAiEmbeddingFunction(
         api_key=os.environ["SECRET_KEY"], task_type="RETRIEVAL_DOCUMENT")

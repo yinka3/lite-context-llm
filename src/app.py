@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
 import os
+import uvicorn
 from typing import Dict, List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import pytz
@@ -8,11 +9,20 @@ from google import genai
 from dotenv import load_dotenv
 from update_mem import History
 from _types import EventData
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 load_dotenv()
 key = os.environ.get("SECRET_KEY")
 app = FastAPI()
 client = genai.Client(api_key=key)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ConnectionManager:
@@ -359,6 +369,10 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_interface():
+    with open("frontend.html", "r") as f:
+        return f.read()
 
 @app.websocket("/ws")
 async def chat_websocket(websocket: WebSocket):
@@ -384,11 +398,10 @@ async def root():
     return {"message": "WebSocket server with rant mode is running"}
 
 
-@app.get("/status")
-async def get_status():
-    return {
-        "rant_mode": manager.rant_mode,
-        "cleaning": manager.get_cleanup_status(),
-        "total_messages": len(manager.history.history),
-        "rant_messages": len(manager.rant_messages) if manager.rant_mode else 0
-    }
+@app.get("/stats")
+async def get_full_stats():
+    return manager.get_memory_stats()
+
+if __name__ == "__main__":
+    print("Starting AI Memory Server...")
+    uvicorn.run(app, host="127.0.0.1", port=8000)

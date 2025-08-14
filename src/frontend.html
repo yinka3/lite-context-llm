@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Memory Terminal</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Courier New', monospace;
+        }
+        
+        #terminal-container {
+            width: 900px;
+            height: 600px;
+            background: #0c0c0c;
+            border: 2px solid #333;
+            border-radius: 8px;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        #status-bar {
+            padding: 10px;
+            border-bottom: 1px solid #333;
+            background: #111;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        
+        #stats-section {
+            padding: 8px 10px;
+            border-bottom: 1px solid #333;
+            background: #0a0a0a;
+            font-size: 12px;
+            color: #888;
+            display: flex;
+            gap: 20px;
+        }
+        
+        .stat-item {
+            display: flex;
+            gap: 5px;
+        }
+        
+        .stat-label {
+            color: #666;
+        }
+        
+        .stat-value {
+            color: #00ff00;
+            font-weight: bold;
+        }
+        
+        #chat-window {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            color: #00ff00;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        
+        #chat-window::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        #chat-window::-webkit-scrollbar-track {
+            background: #111;
+        }
+        
+        #chat-window::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+        
+        #input-area {
+            display: flex;
+            padding: 10px;
+            border-top: 1px solid #333;
+            background: #111;
+        }
+        
+        #prompt {
+            color: #00ffff;
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        
+        #input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #ffffff;
+            font-family: inherit;
+            font-size: 14px;
+            outline: none;
+        }
+        
+        .message-you { 
+            color: #00ffff;
+            margin-bottom: 10px;
+        }
+        
+        .message-ai { 
+            color: #00ff00;
+            margin-bottom: 10px;
+            white-space: pre-wrap;
+        }
+        
+        .message-system { 
+            color: #ffff00;
+            margin-bottom: 10px;
+            font-style: italic;
+        }
+        
+        .status-low { color: #00ff00; }
+        .status-medium { color: #ffff00; }
+        .status-high { color: #ff9900; }
+        .status-critical { color: #ff0000; }
+        
+        .mode-rant { color: #ff00ff; }
+        .mode-normal { color: #ffffff; }
+    </style>
+</head>
+<body>
+    <div id="terminal-container">
+        <div id="status-bar"></div>
+        <div id="stats-section"></div>
+        <div id="chat-window"></div>
+        <div id="input-area">
+            <span id="prompt">&gt;</span>
+            <input type="text" id="input" autofocus>
+        </div>
+    </div>
+
+    <script>
+        class TerminalChat {
+            constructor() {
+                this.ws = null;
+                this.messages = [];
+                this.stats = {};
+                this.connect();
+                this.setupInput();
+                this.updateStats();
+                setInterval(() => this.updateStats(), 5000);
+            }
+            
+            connect() {
+                this.ws = new WebSocket('ws://127.0.0.1:8000/ws');
+                
+                this.ws.onopen = () => {
+                    console.log('Connected to server');
+                };
+                
+                this.ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    this.addMessage(data.type, data.message);
+                };
+                
+                this.ws.onerror = (error) => {
+                    this.addMessage('system', 'Connection error!');
+                };
+                
+                this.ws.onclose = () => {
+                    this.addMessage('system', 'Disconnected from server');
+                };
+            }
+            
+            setupInput() {
+                const input = document.getElementById('input');
+                input.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        const message = input.value.trim();
+                        if (message) {
+                            if (message.toLowerCase() === 'exit') {
+                                this.ws.close();
+                                window.close();
+                                return;
+                            }
+                            this.sendMessage(message);
+                            input.value = '';
+                        }
+                    }
+                });
+            }
+            
+            sendMessage(message) {
+                if (this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(message);
+                    this.addMessage('you', message);
+                }
+            }
+            
+            addMessage(type, message) {
+                const chatWindow = document.getElementById('chat-window');
+                const messageDiv = document.createElement('div');
+                
+                if (type === 'you') {
+                    messageDiv.className = 'message-you';
+                    messageDiv.textContent = '> ' + message;
+                } else if (type === 'system') {
+                    messageDiv.className = 'message-system';
+                    messageDiv.textContent = '[SYSTEM] ' + message;
+                } else {
+                    messageDiv.className = 'message-ai';
+                    messageDiv.textContent = message;
+                }
+                
+                chatWindow.appendChild(messageDiv);
+                chatWindow.scrollTop = chatWindow.scrollHeight;
+            }
+            
+            async updateStats() {
+                try {
+                    const statsResponse = await fetch('http://127.0.0.1:8000/stats');
+                    this.stats = await statsResponse.json();
+                    
+                    // Update displays
+                    this.updateStatusBar();
+                    this.updateStatsSection();
+                } catch (error) {
+                    console.error('Failed to fetch stats');
+                }
+            }
+            
+            updateStatusBar() {
+                const statusBar = document.getElementById('status-bar');
+                const pct = this.stats.memory_percentage || 0;
+                const status = this.stats.limit || 'LOW';
+                const mode = this.stats.rant_mode ? 'RANT' : 'NORMAL';
+                const model = this.stats.model_name || 'Gemini';
+                
+                // Create progress bar
+                const filled = Math.floor(pct / 5);
+                const empty = 20 - filled;
+                const bar = '█'.repeat(filled) + '░'.repeat(empty);
+                
+                // Color classes
+                const statusClass = `status-${status.toLowerCase()}`;
+                const modeClass = `mode-${mode.toLowerCase()}`;
+                
+                statusBar.innerHTML = `<span class="${statusClass}">[${bar}] ${pct.toFixed(1)}% ${status}</span> │ <span class="${modeClass}">${mode}</span> │ <span style="color: #00ffff">${model}</span>`;
+            }
+            
+            updateStatsSection() {
+                const statsSection = document.getElementById('stats-section');
+                
+                const total = this.stats.total_messages || 0;
+                const user = this.stats.user_messages || 0;
+                const roots = this.stats.root_nodes || 0;
+                const connections = this.stats.connections || 0;
+                const uptime = this.stats.uptime_formatted || '0m';
+                
+                statsSection.innerHTML = `
+                    <div class="stat-item">
+                        <span class="stat-label">Messages:</span>
+                        <span class="stat-value">${total}</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">User/AI:</span>
+                        <span class="stat-value">${user}</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Root Nodes:</span>
+                        <span class="stat-value">${roots}</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Connections:</span>
+                        <span class="stat-value">${connections}</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Uptime:</span>
+                        <span class="stat-value">${uptime}</span>
+                    </div>
+                `;
+            }
+        }
+        
+        // Start the app
+        new TerminalChat();
+    </script>
+</body>
+</html>
