@@ -6,15 +6,7 @@ from datetime import datetime
 from _types import ContextGraph, EventData, HistoryNode, TimedConfigType
 from vectorDB import ChromaClient
 from storage import Storage
-
-# want to use spacy models for topic generation to group
-# try:
-#     import spacy
-#     mspacy_medium = spacy.load('en_core_web_md')
-# except Exception as e:
-#     print(f"Spacy model not load")
-#     mspacy_medium = None
-
+from src.spacy import SpacyModel
 
 class History:
     MAX_CAPACITY = 50000
@@ -29,7 +21,7 @@ class History:
 
         self.vectorDB = ChromaClient()
         self.storage = Storage(history=self)
-
+        self.spacy_model = SpacyModel()
         self.storage._load_from_disk()
 
     def initialize(self):
