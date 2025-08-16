@@ -5,7 +5,7 @@ import uvicorn
 from typing import Dict, List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import pytz
-from google import genai
+from google import generativeai
 from dotenv import load_dotenv
 from update_mem import History
 from _types import EventData
@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse
 load_dotenv()
 key = os.environ.get("SECRET_KEY")
 app = FastAPI()
-client = genai.Client(api_key=key)
+client = generativeai.configure(api_key=key)
 
 app.add_middleware(
     CORSMiddleware,

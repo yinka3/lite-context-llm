@@ -1,15 +1,14 @@
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 import pytz
 import numpy as np
 from datetime import datetime
-from _types import ContextGraph, EventData, HistoryNode, SentimentResult, TimedConfigType
-from vectorDB import ChromaClient
-from storage import Storage
-from nlp_model import SpacyModel
+from _types import ChromaQueryResult, Context, ContextGraph, EventData, HistoryNode, RelationReport, SentimentResult, TimedConfigType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    pass
+    from vectorDB import ChromaClient
+    from storage import Storage
+    from nlp_model import SpacyModel
 
 class History:
     MAX_CAPACITY = 50000
@@ -22,8 +21,9 @@ class History:
         self._user_event_cnt: int = 0
         self.top_events: List[HistoryNode] = []
 
-        self.vectorDB: = ChromaClient()
-        self.storage = Storage(history=self)
+        self.vectorDB: 'ChromaClient' = ChromaClient()
+        self.storage: 'Storage' = Storage(history=self)
+        self.spacy_model: 'SpacyModel'
 
         try:
             self.spacy_model = SpacyModel()
@@ -31,11 +31,11 @@ class History:
             raise Exception("Spacy model not loaded.")
         self.storage._load_from_disk()
 
-    def initialize(self):
+    def initialize(self) -> None:
         self.vectorDB.initialize()
     
-    def add_to_history(self, event: EventData):
-        
+    def add_to_history(self, event: EventData) -> None:
+
         try:
             if len(self.history) >= self.MAX_CAPACITY:
                 raise Exception(f"Memory capacity reached ({self.MAX_CAPACITY} messages)")
@@ -49,26 +49,24 @@ class History:
             self.history.append(new_node)
             self._update_context(new_node)
 
-
-            self.storage._save_to_disk()
-                
+            self.storage._save_to_disk() 
         except Exception as e:
             print(f"failed to add message to history: {e}")
             return
 
-    def _update_context(self, event: HistoryNode):
+    def _update_context(self, event: HistoryNode) -> None:
         if event.data.role != "user":
             return
         
         try:
-            results = self.vectorDB.query(event.data.message)
-            if not results or not results.get('ids') or not results['ids'][0]:
+            results: Optional[ChromaQueryResult] = self.vectorDB.query(event.data.message)
+            if not results or not results.ids:
                 print(f"No vector results found for event {event.id}, creating root node")
                 event.sparent = None
                 return
             
-            best_parent_id = None
-            best_score = 0
+            best_parent_id: int
+            best_score: float
             
             for i, node_id in enumerate(results['ids'][0]):
                 candidate_id = int(node_id)
@@ -83,7 +81,7 @@ class History:
                     continue
                 
                 candidate_node = self.context_nodes.context_graph[candidate_id]
-                similarity = 1 - results['distances'][0][i]
+                similarity = 1 - results.distances[0][i]
                 
                 final_score = self.apply_time_decay(
                     similarity, 
@@ -106,7 +104,7 @@ class History:
             if best_score >= threshold:
                 best_parent_event = self.context_nodes.context_graph[best_parent_id]
                 relation_report = self.spacy_model.topics_are_related(event.data.message, best_parent_event.data.message)
-                if relation_report["is_related"]:
+                if relation_report.is_related:
                     
                     event.sparent = best_parent_event
                     best_parent_event.children.append(event)
@@ -139,7 +137,7 @@ class History:
         time_multiplier = max(0.4, 1 - (days_ago * 0.05))
         return similarity * time_multiplier
 
-    def get_relevant_context(self, query: str, max_results: int = 5) -> List[Dict]:
+    def get_relevant_context(self, query: str, max_results: int = 5) -> List[Context]:
         """Get relevant historical context for a query"""
         try:
             results = self.vectorDB.query(query, n_results=max_results)
@@ -147,7 +145,7 @@ class History:
             if not results or not results.get('ids') or not results['ids'][0]:
                 return []
             
-            relevant_contexts = []
+            relevant_contexts: List[Context] = []
             
             for i, node_id in enumerate(results['ids'][0]):
                 node_id = int(node_id)
@@ -158,13 +156,11 @@ class History:
                 node = self.context_nodes.context_graph[node_id]
                 
                 conversation_thread = self.get_conversation_story(node_id)
+                similarity = 1 - results['distances'][0][i]
+                context: Context = Context(matched_message=node.data.message, role=node.data.role, 
+                                           timestamp=node.data.timestamp, similarity=similarity)
                 
-                context = {
-                    'matched_message': node.data.message,
-                    'role': node.data.role,
-                    'timestamp': node.data.timestamp,
-                    'similarity': 1 - results['distances'][0][i],
-                    'conversation_thread': [
+                context.conversation_thread = [
                         {
                             'role': n.data.role,
                             'message': n.data.message,
@@ -172,16 +168,16 @@ class History:
                         }
                         for n in conversation_thread[-5:]
                     ]
-                }
                 relevant_contexts.append(context)
             
-            relevant_contexts.sort(key=lambda x: x['similarity'], reverse=True)
+            relevant_contexts.sort(key=lambda x: x.similarity, reverse=True)
             
             return relevant_contexts
             
         except Exception as e:
             print(f"Error getting relevant context: {e}")
             return []
+        
     def _would_create_cycle(self, new_child: HistoryNode, potential_parent_id: int) -> bool:
 
         current_id = potential_parent_id
@@ -234,7 +230,7 @@ class History:
         return branches
 
 
-    def _quick_check_context(self, config: TimedConfigType):
+    def _quick_check_context(self, config: TimedConfigType) -> Optional[ChromaQueryResult]:
         last: HistoryNode = self.history[-1]
         if last.data.role == "AI":
             last = self.history[-2]
@@ -347,11 +343,11 @@ class History:
         
         # Get current emotion (most recent)
         current_sentiment = sentiments[-1]
-        current_score = current_sentiment['score']
+        current_score = current_sentiment.score
         
         if len(sentiments) > 1:
             # Get average of last 3 messages (or all if less than 3)
-            recent_scores = [s['score'] for s in sentiments[-3:]]
+            recent_scores = [s.score for s in sentiments[-3:]]
             recent_avg = sum(recent_scores) / len(recent_scores)
             
             if recent_avg > 0.3:
@@ -380,11 +376,11 @@ class History:
             first_half = sentiments[:len(sentiments)//2]
             second_half = sentiments[len(sentiments)//2:]
             
-            first_avg = sum(s['score'] for s in first_half) / len(first_half) if first_half else 0
-            second_avg = sum(s['score'] for s in second_half) / len(second_half) if second_half else 0
+            first_avg = sum(s.score for s in first_half) / len(first_half) if first_half else 0
+            second_avg = sum(s.score for s in second_half) / len(second_half) if second_half else 0
             
             # Calculate emotional volatility
-            all_scores = [s['score'] for s in sentiments]
+            all_scores = [s.score for s in sentiments]
             if len(all_scores) > 2:
                 score_changes = [abs(all_scores[i] - all_scores[i-1]) for i in range(1, len(all_scores))]
                 volatility = sum(score_changes) / len(score_changes)
@@ -412,18 +408,18 @@ class History:
             "volatility": volatility,
             "message_count": len(sentiments),
             "distribution": {
-                "positive": sum(1 for s in sentiments if s['label'] == 'positive'),
-                "negative": sum(1 for s in sentiments if s['label'] == 'negative'),
-                "neutral": sum(1 for s in sentiments if s['label'] == 'neutral')
+                "positive": sum(1 for s in sentiments if s.label == 'positive'),
+                "negative": sum(1 for s in sentiments if s.label == 'negative'),
+                "neutral": sum(1 for s in sentiments if s.label == 'neutral')
             }
         }
 
-    def get_topics(self) -> set:
+    def get_topics(self) -> Set[str]:
         """
         Analyze sentiment for each major conversation topic
         Groups messages by root nodes and analyzes sentiment per thread
         """
-        topics = set()
+        topics: Set[str] = set()
         
         for root_id in list(self.root_nodes)[:20]:
             if root_id not in self.context_nodes.context_graph:
@@ -443,7 +439,7 @@ class History:
         Extract a short topic name from a message
         Uses SpaCy to find the main topic or falls back to first few words
         """
-        doc = self.nlp(message)
+        doc: Token = self.spacy_model.nlp(message)
         
 
         noun_phrases = [chunk.text for chunk in doc.noun_chunks]

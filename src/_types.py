@@ -23,6 +23,14 @@ class ContextGraph:
     context_graph: Dict[int, HistoryNode]
 
 @dataclass
+class Context:
+    matched_message: str = ""
+    role: str = ""
+    timestamp: datetime
+    similarity: float
+    conversation_thread: List[Dict[str, str]]
+
+@dataclass
 class TimedConfigType:
     name: str
     type: HistoryNode | Union[list, datetime]
