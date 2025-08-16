@@ -127,6 +127,28 @@
         
         .mode-rant { color: #ff00ff; }
         .mode-normal { color: #ffffff; }
+        
+        #sentiment-box {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #0f0;
+            min-width: 200px;
+            z-index: 1000;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+        
+        #sentiment-box:hover {
+            box-shadow: 0 0 15px rgba(0, 255, 0, 0.2);
+            border-color: #0f0;
+        }
     </style>
 </head>
 <body>
@@ -146,10 +168,13 @@
                 this.ws = null;
                 this.messages = [];
                 this.stats = {};
+                this.sentimentData = {};
                 this.connect();
                 this.setupInput();
                 this.updateStats();
+                this.updateSentiment();
                 setInterval(() => this.updateStats(), 5000);
+                setInterval(() => this.updateSentiment(), 5000);
             }
             
             connect() {
@@ -230,6 +255,16 @@
                 }
             }
             
+            async updateSentiment() {
+                try {
+                    const response = await fetch('http://127.0.0.1:8000/sentiment');
+                    this.sentimentData = await response.json();
+                    this.updateSentimentDisplay();
+                } catch (error) {
+                    console.error('Failed to fetch sentiment');
+                }
+            }
+            
             updateStatusBar() {
                 const statusBar = document.getElementById('status-bar');
                 const pct = this.stats.memory_percentage || 0;
@@ -264,7 +299,7 @@
                         <span class="stat-value">${total}</span>
                     </div>
                     <div class="stat-item">
-                        <span class="stat-label">User/AI:</span>
+                        <span class="stat-label">User:</span>
                         <span class="stat-value">${user}</span>
                     </div>
                     <div class="stat-item">
@@ -281,8 +316,89 @@
                     </div>
                 `;
             }
+            
+            updateSentimentDisplay() {
+                // Create or update sentiment box
+                let sentimentBox = document.getElementById('sentiment-box');
+                if (!sentimentBox) {
+                    sentimentBox = document.createElement('div');
+                    sentimentBox.id = 'sentiment-box';
+                    document.body.appendChild(sentimentBox);
+                }
+                
+                const current = this.sentimentData.current_session || {};
+                const topics = this.sentimentData.topics || [];
+                
+                // Build enhanced sentiment display
+                let html = `
+                    <div style="border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 5px;">
+                        <strong style="color: #00ffff;">SENTIMENT ANALYSIS</strong>
+                    </div>
+                    <div style="margin-bottom: 10px;">
+                        <div style="color: #888;">Current Session:</div>
+                        <div style="color: #fff;">
+                            ${current.emoji || '😐'} ${current.overall || 'neutral'} 
+                            <span style="color: #666;">(${current.trend || 'stable'})</span>
+                        </div>
+                `;
+                
+                // Add volatility indicator if available
+                if (current.volatility !== undefined) {
+                    const volatilityLevel = current.volatility > 0.4 ? 'HIGH' : 
+                                        current.volatility > 0.2 ? 'MED' : 'LOW';
+                    const volatilityColor = current.volatility > 0.4 ? '#ff6b6b' : 
+                                        current.volatility > 0.2 ? '#ffd93d' : '#6bcf7f';
+                    
+                    html += `
+                        <div style="font-size: 11px; color: ${volatilityColor};">
+                            Volatility: ${volatilityLevel} (${(current.volatility * 100).toFixed(0)}%)
+                        </div>
+                    `;
+                }
+                
+                html += `</div>`;
+                
+                // Add distribution breakdown if available
+                if (current.distribution && current.message_count > 3) {
+                    const dist = current.distribution;
+                    html += `
+                        <div style="border-top: 1px solid #333; padding-top: 5px; margin-bottom: 10px;">
+                            <div style="color: #888; font-size: 11px;">Recent Messages (${current.message_count || 0}):</div>
+                            <div style="font-size: 10px; margin: 2px 0;">
+                                <span style="color: #6bcf7f;">✓${dist.positive || 0}</span>
+                                <span style="color: #ff6b6b; margin-left: 8px;">✗${dist.negative || 0}</span>
+                                <span style="color: #888; margin-left: 8px;">~${dist.neutral || 0}</span>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                // Add topics if available
+                if (topics && topics.length > 0) {
+                    html += `
+                        <div style="border-top: 1px solid #333; padding-top: 5px;">
+                            <div style="color: #888; font-size: 11px;">Active Topics:</div>
+                    `;
+                    
+                    // Show top 3 topics
+                    topics.slice(0, 3).forEach((topic) => {
+                        html += `
+                            <div style="font-size: 10px; margin: 2px 0; color: #aaa;">
+                                • ${topic}
+                            </div>
+                        `;
+                    });
+                    
+                    if (topics.length > 3) {
+                        html += `<div style="font-size: 10px; color: #666;">+${topics.length - 3} more</div>`;
+                    }
+                    
+                    html += `</div>`;
+                }
+                
+                sentimentBox.innerHTML = html;
+            }
         }
-        
         // Start the app
         new TerminalChat();
     </script>

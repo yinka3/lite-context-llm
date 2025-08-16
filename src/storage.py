@@ -17,7 +17,7 @@ class Storage:
         """Persist memory to disk for recovery"""
         try:
             with open(self.persistence_dir / "history.pkl", "wb") as f:
-                pickle.dump(self.history.history, f)  # Just the list
+                pickle.dump(self.history.history, f)
             
             with open(self.persistence_dir / "context_graph.pkl", "wb") as f:
                 pickle.dump(self.history.context_nodes, f)
@@ -57,20 +57,6 @@ class Storage:
                     self.history._user_event_cnt = metadata.get("user_event_cnt", 0)
                     self.history.root_nodes = set(metadata.get("root_nodes", []))
                     
-            print(f"Loaded {len(self.history.history)} messages from disk")
-            
-            if len(self.history.history) > 0:
-                self._rebuild_vector_db()
-            
+            print(f"Loaded {len(self.history.history)} messages from disk")  
         except Exception as e:
             print(f"Failed to load memory from disk: {e}")
-    
-    def _rebuild_vector_db(self):
-        """Rebuild the vector database from loaded history"""
-        try:
-            print("Rebuilding vector database...")
-            for node in self.history.history:
-                self.history.vectorDB.add_event(node)
-            print(f"Rebuilt vector DB with {len(self.history.history)} messages")
-        except Exception as e:
-            print(f"Failed to rebuild vector DB: {e}")

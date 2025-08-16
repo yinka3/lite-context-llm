@@ -49,6 +49,10 @@ class ConnectionManager:
         if not hasattr(self.history, 'initialized'):
             self.history.initialize()
             self.history.initialized = True
+
+            vector_count = self.history.vectorDB.collection.count()
+            history_count = len(self.history.history)
+            print(f"✓ System ready: {history_count} messages, {vector_count} vectors")
     
     def add_message_to_history(self, message: str, role: str):
         """Add message to permanent history"""
@@ -133,9 +137,34 @@ class ConnectionManager:
         except Exception as e:
             print(f"Failed to generate rant summary: {e}")
             return f"Rant session with {len(self.rant_messages)} messages"
+    
+
+    def validate_message(self, message: str) -> tuple[bool, str]:
+        """Validate message before processing"""
+
+        MAX_MESSAGE_SIZE = 10000
+        if len(message) > MAX_MESSAGE_SIZE:
+            return False, f"Message too long (max {MAX_MESSAGE_SIZE} characters)"
+        
+        if not message.strip():
+            return False, "Message cannot be empty"
+        
+        if '\x00' in message:
+            return False, "Message contains invalid characters"
+        
+        return True, ""
 
     async def process_message(self, user_message: str, websocket: WebSocket):
         """Process incoming message based on mode"""
+
+
+        is_valid, error_msg = self.validate_message(user_message)
+        if not is_valid:
+            await websocket.send_json({
+                "type": "error",
+                "message": error_msg
+            })
+            return
         
         if user_message.lower() == "/rant":
             self.start_rant_mode()
@@ -171,14 +200,18 @@ class ConnectionManager:
             })
             return
         
-        # Now safe to add
         eastern = pytz.timezone('US/Eastern')
         now_time = datetime.now(tz=eastern)
         event_obj = EventData(role="user", timestamp=now_time, message=user_message)
-        self.history.add_to_history(event_obj)
-            
+        
+        await asyncio.to_thread(self.history.add_to_history, event_obj)
+        
         try:
-            relevant_contexts = self.history.get_relevant_context(user_message, max_results=5)
+            relevant_contexts = await asyncio.to_thread(
+                self.history.get_relevant_context, 
+                user_message, 
+                5
+            )
             
             conversation_history = []
             
@@ -207,10 +240,9 @@ class ConnectionManager:
                 "type": "message",
                 "message": ai_response.text
             })
-            return
-        
+            
         except Exception as e:
-            error_msg = f"Rant AI error: {e}"
+            error_msg = f"AI error: {e}"
             await websocket.send_json({
                 "type": "error",
                 "message": error_msg
@@ -359,6 +391,28 @@ class ConnectionManager:
             return f"{hours}h {minutes}m"
         else:
             return f"{minutes}m"
+    
+    def get_sentiment_analysis(self):
+        """Get current sentiment analysis"""
+        try:
+            current_sentiment = self.history.get_current_session_sentiment()
+            topics = list(self.history.get_topics())
+            return {
+                "current_session": current_sentiment,
+                "topics": topics,
+                "timestamp": datetime.now(pytz.timezone('US/Eastern')).isoformat()
+            }
+        except Exception as e:
+            print(f"Error getting sentiment: {e}")
+            return {
+                "current_session": {
+                    "overall": "neutral",
+                    "emoji": "😐",
+                    "trend": "stable"
+                },
+                "topics": {},
+                "error": str(e)
+            }
       
     def disconnect(self):
         self.active_connection = None
@@ -401,6 +455,11 @@ async def root():
 @app.get("/stats")
 async def get_full_stats():
     return manager.get_memory_stats()
+
+@app.get("/sentiment")
+async def get_sentiment():
+    """Get sentiment analysis for current session and topics"""
+    return manager.get_sentiment_analysis()
 
 if __name__ == "__main__":
     print("Starting AI Memory Server...")
