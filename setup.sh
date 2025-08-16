@@ -2,7 +2,7 @@
 
 set -e # Exit on any error
 
-echo "🚀 Setting up AI Memory System with Local LLMs (HTTP-only)..."
+echo " Setting up Memory System with Local LLMs..."
 
 
 GREEN='\033[0;32m'
