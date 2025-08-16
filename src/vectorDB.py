@@ -2,10 +2,11 @@ from uuid import UUID, uuid4
 import chromadb
 import os
 from chromadb.utils import embedding_functions
-from typing import List, Union
-from _types import HistoryNode
+from typing import List, Optional, Union
+from _types import HistoryNode, ChromaQueryResult
 from datetime import datetime, timedelta
 import logging
+from chromadb.api.models.Collection import Collection
 
 
 class ChromaClient:
@@ -24,10 +25,10 @@ class ChromaClient:
         self.embed_func_query = embedding_functions.GoogleGenerativeAiEmbeddingFunction(
         api_key=os.environ["SECRET_KEY"], task_type="RETRIEVAL_QUERY")
 
-        self.collection = None
+        self.collection: Optional[Collection] = None
 
     
-    def initialize(self):
+    def initialize(self) -> None:
         try:
             self.collection = self.client.get_or_create_collection(name="LLM_Memory", embedding_function=self.embed_func_doc)
 
@@ -36,7 +37,7 @@ class ChromaClient:
             logging.error(f"Failed to initialize ChromaDB: {e}")
             return
     
-    def get_event(self, ids: List[str] | str):
+    def get_event(self, ids: Union[List[str], str]) -> List[str]:
 
         if self.collection is None:
             raise TypeError("client not initialized.")
@@ -47,7 +48,7 @@ class ChromaClient:
         results = self.collection.get(ids=ids, include=["documents"])
         return results.get('documents', [])
     
-    def add_event(self, event: HistoryNode):
+    def add_event(self, event: HistoryNode) -> bool:
         if self.collection is None:
             raise TypeError("client not initialized.")
         
@@ -71,7 +72,7 @@ class ChromaClient:
             logging.info(f"Count not add {event.id}: {e}")
             return False
         
-    def query(self, query: str, n_results: int = 10):
+    def query(self, query: str, n_results: int = 10) -> Optional[ChromaQueryResult]:
         if self.collection is None:
             raise TypeError("client not initialized.")
         
@@ -88,7 +89,7 @@ class ChromaClient:
                             query: str, 
                             duration: Union[list, int], 
                             now_time: datetime,
-                            explicit: bool = False, n_results: int = 10):
+                            explicit: bool = False, n_results: int = 10) -> Optional[ChromaQueryResult]:
         if self.collection is None:
             raise TypeError("client not initialized.")
 
@@ -119,15 +120,15 @@ class ChromaClient:
         
         except Exception as e:
             logging.error(f"Time-based query failed: {e}")
-            return {}
+            return None
     
-    def query_by_date(self, query: str, target_date: datetime, window: int = 0.5, n_results: int = 10):
+    def query_by_date(self, query: str, target_date: datetime, window: float = 0.5, n_results: int = 10) -> Optional[ChromaQueryResult]:
         if self.collection is None:
             raise TypeError("client not initialized.")
         
         try:
-            start = target_date - timedelta(days=float(window))
-            end = target_date + timedelta(days=float(window))
+            start = target_date - timedelta(days=window)
+            end = target_date + timedelta(days=window)
             return self.collection.query(
                 query_texts=[query],
                 n_results=n_results,
@@ -139,5 +140,5 @@ class ChromaClient:
             )
         except Exception as e:
             logging.error(f"Time-based query failed: {e}")
-            return {}
+            return None
     

@@ -1,5 +1,8 @@
+from typing import Dict, List, Optional, Tuple, Union
 import spacy
 import json
+from _types import TopicExtractionResult, RelationReport, SentimentResult
+from spacy.language import Language
 from spacy.tokens import Doc, Token
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -31,21 +34,21 @@ class SpacyModel:
 
     def __init__(self):
 
-        self.nlp = NLP_MODEL
-        self.vader = SentimentIntensityAnalyzer()
+        self.nlp: Language = NLP_MODEL
+        self.vader: SentimentIntensityAnalyzer = SentimentIntensityAnalyzer()
 
         try:
             with open("./vocab.json" ,"r") as file:
-                self.vocab = json.load(file)
+                self.vocab: Dict[str, Union[List, Dict]] = json.load(file)
         except Exception:
             raise Exception("Could not load in vocab.")
         
-        self.nlp_docs = {}
+        self.nlp_docs: Dict[str, Doc] = {}
         for cat, doc in self.vocab.get("seed_concepts").items():
             self.nlp_docs[cat] = self.nlp(" ".join(doc))
 
-    def _resolve_coreference(self, doc: Doc):
-        resolved_map = {}
+    def _resolve_coreference(self, doc: Doc) -> Dict[int, Token]:
+        resolved_map: Dict[int, Token] = {}
         
         try:
             if not hasattr(doc._, 'coref_clusters'):
@@ -71,14 +74,14 @@ class SpacyModel:
             
         return resolved_map
     
-    def _adj_to_state(self, adj: Token):
-        STATE_ADJECTIVE = self.vocab.get("state_adjectives")        
+    def _adj_to_state(self, adj: Token) -> Optional[Tuple[str, str]]:
+        STATE_ADJECTIVE: List[str] = self.vocab.get("state_adjectives")        
 
         if adj.lemma_ in STATE_ADJECTIVE:
             return ("condition", adj.lemma_)
 
-        match_category = None
-        max_similarity = 0
+        match_category: str = ""
+        max_similarity: float = 0.0
 
         for cat, seed_doc in self.nlp_docs.items():
             similarity = adj.similarity(seed_doc)
@@ -91,26 +94,23 @@ class SpacyModel:
 
         return None
 
-    def extract_topics(self, text: str):
+    def extract_topics(self, text: str) -> TopicExtractionResult:
         
         doc = self.nlp(text)
         resolved_map = self._resolve_coreference(doc)
         STATE_VERBS = self.vocab.get("state_verbs")
         INTENT_MAP = self.vocab.get("intent_map")
 
-        result = {
-            "intent": "unknown",
-            "main_topic": None,
-            "entities": {ent.text: ent.label_ for ent in doc.ents},
-            "state_info": {}
-        }
+        result = TopicExtractionResult()
+        result.entities = {ent.text: ent.label_ for ent in doc.ents}
+
 
         root_token = next((token for token in doc if token.dep_ == "ROOT"), None)
 
         if root_token:
-            intent = INTENT_MAP.get(root_token.lemma_)
+            intent: str = INTENT_MAP.get(root_token.lemma_)
             if intent:
-                result["intent"]  = intent
+                result.intent = intent
                 
         for token in doc:
             target_token = None
@@ -133,91 +133,88 @@ class SpacyModel:
                     topic_noun = target_token.lemma_
                 
                 if token.lemma_ in STATE_VERBS:
-                    cat, value = STATE_VERBS[token.lemma_]
-                    if topic_noun not in result["state_info"]:
-                        result["state_info"][topic_noun] = {}
-                    result["state_info"][topic_noun][cat] = value
+                    state_verb: List[str] = STATE_VERBS[token.lemma_]
+                    cat: str = state_verb[0]
+                    value: str = state_verb[1]
+                    if topic_noun not in result.state_info:
+                        result.state_info[topic_noun] = {}
+                    result.state_info[topic_noun][cat] = value
 
                 if token.pos_ == "ADJ":
                     states = self._adj_to_state(token)
 
                     if states:
                         cat, value = states
-                        if topic_noun not in result["state_info"]:
-                            result["state_info"][topic_noun] = {}
-                        result["state_info"][topic_noun][cat] = value
+                        if topic_noun not in result.state_info:
+                            result.state_info[topic_noun] = {}
+                        result.state_info[topic_noun][cat] = value
             
         if doc.noun_chunks:
-            result["main_topic"] = max(doc.noun_chunks, key=len).text
+            result.main_topic = max(doc.noun_chunks, key=len).text
             
         return result
 
 
-    def topics_are_related(self, text1: str, text2: str) -> tuple[bool, float, set]:
+    def topics_are_related(self, text1: str, text2: str) -> RelationReport:
         """
         Check if texts are contextually related, including state changes
         Returns: (are_related, confidence_score, common_elements)
         """        
-        topics1 = self.extract_topics(text1)
-        topics2 = self.extract_topics(text2)
+        topics1: TopicExtractionResult = self.extract_topics(text1)
+        topics2: TopicExtractionResult = self.extract_topics(text2)
 
-        report = {
-            "is_related": False,
-            "confidence_score": 0.0,
-            "common_elements": set(),
-            "found_connections": []
-        }
+        report: RelationReport = RelationReport()
                 
-        if topics1.get("state_info") and topics2.get("state_info"):
-            keys1 = set(topics1["state_info"].keys())
-            keys2 = set(topics2["state_info"].keys())
+        if topics1.state_info and topics2.state_info:
+            keys1 = set(topics1.state_info.keys())
+            keys2 = set(topics2.state_info.keys())
             shared_topics = keys1 & keys2
             if shared_topics:
-                report["found_connections"].append("state_overlap")
-                report["common_elements"].update(shared_topics)
-                report["confidence_score"] += 0.35
+                report.found_connections.append("state_overlap")
+                report.common_elements.update(shared_topics)
+                report.confidence_score += 0.35
         
-        m_topic1 = topics1.get("main_topic")
-        m_topic2 = topics2.get("main_topic")
+        m_topic1 = topics1.main_topic
+        m_topic2 = topics2.main_topic
 
         if m_topic1 and m_topic2:
             if m_topic1 in m_topic2 or m_topic2 in m_topic1:
-                report["found_connections"].append("main_topic_overlap")
-                report["common_elements"].add(m_topic1 if len(m_topic1) < len(m_topic2) else m_topic2)
-                report["confidence_score"] += 0.25
+                report.found_connections.append("main_topic_overlap")
+                report.common_elements.add(m_topic1 if len(m_topic1) < len(m_topic2) else m_topic2)
+                report.confidence_score += 0.25
         
-        if topics1.get("state_info"):
-            for topic in topics1["state_info"].keys():
-                if topic.lower() in text2.lower() and topic not in report["common_elements"]:
-                    report["found_connections"].append("topic_continuation")
-                    report["common_elements"].add(topic)
-                    report["confidence_score"] += 0.15
+        if topics1.state_info:
+            for topic in topics1.state_info.keys():
+                if topic.lower() in text2.lower() and topic not in report.common_elements:
+                    report.found_connections.append("topic_continuation")
+                    report.common_elements.add(topic)
+                    report.confidence_score += 0.15
                     break
     
-        if topics2.get("state_info"):
-            for topic in topics2["state_info"].keys():
-                if topic.lower() in text1.lower() and topic not in report["common_elements"]:
-                    report["found_connections"].append("topic_reference")
-                    report["common_elements"].add(topic)
-                    report["confidence_score"] += 0.15
+        if topics2.state_info:
+            for topic in topics2.state_info.keys():
+                if topic.lower() in text1.lower() and topic not in report.common_elements:
+                    report.found_connections.append("topic_continuation")
+                    report.common_elements.add(topic)
+                    report.confidence_score += 0.15
                     break
         
 
-        if topics1.get("entities") and topics2.get("entities"):
-            entities1 = set(topics1["entities"].keys())
-            entities2 = set(topics2["entities"].keys())
+        if topics1.entities and topics2.entities:
+            entities1 = set(topics1.entities.keys())
+            entities2 = set(topics2.entities.keys())
 
             shared_entities = entities1 & entities2
             if shared_entities:
-                report["found_connections"].append("entity_overlap")
-                report["common_elements"].update(shared_entities)
+                report.found_connections.append("entity_overlap")
+                report.common_elements.update(shared_entities)
                 entity_score = min(0.20, 0.1 * len(shared_entities))
-                report["confidence_score"] += entity_score
+                report.confidence_score += entity_score
         
-        if topics1.get("intent") and topics2.get("intent"):
-            if topics1["intent"] == topics2["intent"] and topics1["intent"] != "unknown":
-                report["found_connections"].append("similar_intent")
-                report["confidence_score"] += 0.1
+        if topics1.intent and topics2.intent:
+            if topics1.intent == topics2.intent and topics1.intent != "unknown":
+                report.found_connections.append("similar_intent")
+                report.confidence_score += 0.1
         
         doc2 = self.nlp(text2)
     
@@ -228,22 +225,23 @@ class SpacyModel:
                 break
         
         if has_early_pronoun:
-            if report["common_elements"]:
-                report["found_connections"].append("pronoun_continuation_strong")
-                report["confidence_score"] += 0.15
+            if report.common_elements:
+                report.found_connections.append("pronoun_continuation_strong")
+                report.confidence_score += 0.15
             else:
-                report["found_connections"].append("pronoun_continuation_weak")
-                report["confidence_score"] += 0.1
+                report.found_connections.append("pronoun_continuation_weak")
+                report.confidence_score += 0.1
         
-        if report["confidence_score"] > 0.2:
-            report["is_related"] = True
+        if report.confidence_score > 0.2:
+            report.is_related = True
 
-        report["confidence_score"] = min(report["confidence_score"], 1.0)
-        report["common_elements"] = list(report["common_elements"])
+        report.confidence_score = min(report.confidence_score, 1.0)
+        report.common_elements = report.common_elements
+        
         return report
     
 
-    def analyze_sentiment(self, text: str) -> dict:
+    def analyze_sentiment(self, text: str) -> SentimentResult:
         """Use VADER for more accurate sentiment analysis"""
         scores = self.vader.polarity_scores(text)
         compound_score = scores['compound']
@@ -255,12 +253,10 @@ class SpacyModel:
         else:
             label = "neutral"
         
-        return {
-            "score": compound_score,
-            "label": label,
-            "positive_count": scores['pos'],
-            "negative_count": scores['neg']
-        }
+        return SentimentResult(score=compound_score, label=label, 
+                               positive_count=scores['pos'],
+                               negative_count=scores['neg'])
+
 
     def get_sentiment_emoji(self, label: str) -> str:
         """Convert sentiment label to emoji for display"""

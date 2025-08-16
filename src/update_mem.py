@@ -2,11 +2,14 @@ from typing import Dict, List, Set
 import pytz
 import numpy as np
 from datetime import datetime
-from _types import ContextGraph, EventData, HistoryNode, TimedConfigType
+from _types import ContextGraph, EventData, HistoryNode, SentimentResult, TimedConfigType
 from vectorDB import ChromaClient
 from storage import Storage
 from nlp_model import SpacyModel
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    pass
 
 class History:
     MAX_CAPACITY = 50000
@@ -16,10 +19,10 @@ class History:
         self._ephemeral_history: List[HistoryNode] = []
         self.context_nodes: ContextGraph = ContextGraph(context_graph={})
         self.root_nodes: Set[int] = set()
-        self._user_event_cnt = 0
+        self._user_event_cnt: int = 0
         self.top_events: List[HistoryNode] = []
 
-        self.vectorDB = ChromaClient()
+        self.vectorDB: = ChromaClient()
         self.storage = Storage(history=self)
 
         try:
@@ -333,10 +336,10 @@ class History:
     def get_current_session_sentiment(self, last_n: int = 8):
         recent_messages = self.history[-last_n:] if len(self.history) > last_n else self.history
         
-        sentiments = []
+        sentiments: List[SentimentResult] = []
         for node in recent_messages:
             if node.data.role.lower() == "user":
-                sentiment = self.spacy_model.analyze_sentiment(node.data.message)
+                sentiment: SentimentResult = self.spacy_model.analyze_sentiment(node.data.message)
                 sentiments.append(sentiment)
         
         if not sentiments:
